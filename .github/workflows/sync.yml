@@ -5,7 +5,7 @@ permissions:
 
 on:
   schedule:
-    - cron: "0 0 * * *" # every day
+    - cron: "0 0 * * *" # 每天运行一次
   workflow_dispatch:
 
 jobs:
@@ -15,25 +15,52 @@ jobs:
     if: ${{ github.event.repository.fork }}
 
     steps:
-      # Step 1: run a standard checkout action
-      - name: Checkout target repo
-        uses: actions/checkout@v3
+      # 新增步骤：检查上游是否有更新
+      # 使用 GitHub API 对比上游仓库和当前仓库的最新 Commit SHA
+      - name: Check for updates
+        id: check_updates
+        run: |
+          # 设置上游仓库和分支
+          UPSTREAM_REPO="cmliu/edgetunnel"
+          BRANCH="main"
+          
+          # 获取上游仓库最新 Commit SHA
+          UPSTREAM_COMMIT=$(curl -s https://api.github.com/repos/$UPSTREAM_REPO/commits/$BRANCH | jq -r '.sha')
+          
+          # 获取你自己仓库最新 Commit SHA
+          CURRENT_COMMIT=$(curl -s https://api.github.com/repos/${{ github.repository }}/commits/$BRANCH | jq -r '.sha')
+          
+          echo "Upstream commit: $UPSTREAM_COMMIT"
+          echo "Current commit:  $CURRENT_COMMIT"
+          
+          if [ "$UPSTREAM_COMMIT" = "$CURRENT_COMMIT" ]; then
+            echo "当前仓库已是最新，无需更新。"
+            echo "has_new_commits=false" >> $GITHUB_OUTPUT
+          else
+            echo "发现上游有新提交，准备更新..."
+            echo "has_new_commits=true" >> $GITHUB_OUTPUT
+          fi
 
-      # Step 2: run the sync action
+      # 步骤 1: Checkout (只有当有更新时才运行)
+      - name: Checkout target repo
+        if: steps.check_updates.outputs.has_new_commits == 'true'
+        uses: actions/checkout@v4
+
+      # 步骤 2: Sync (只有当有更新时才运行)
       - name: Sync upstream changes
         id: sync
+        if: steps.check_updates.outputs.has_new_commits == 'true'
         uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
         with:
           upstream_sync_repo: cmliu/edgetunnel
           upstream_sync_branch: main
           target_sync_branch: main
-          target_repo_token: ${{ secrets.GITHUB_TOKEN }} # automatically generated, no need to set
-
-          # Set test_mode true to run tests instead of the true action!!
+          target_repo_token: ${{ secrets.GITHUB_TOKEN }}
           test_mode: false
 
+      # 错误检查 (只有当 Sync 运行且失败时才触发)
       - name: Sync check
-        if: failure()
+        if: failure() && steps.check_updates.outputs.has_new_commits == 'true'
         run: |
           echo "[Error] 由于上游仓库的 workflow 文件变更，导致 GitHub 自动暂停了本次自动更新，你需要手动 Sync Fork 一次，详细教程请查看项目README.md "
           echo "[Error] Due to a change in the workflow file of the upstream repository, GitHub has automatically suspended the scheduled automatic update. You need to manually sync your fork. Please refer to the project README.md for instructions. "
